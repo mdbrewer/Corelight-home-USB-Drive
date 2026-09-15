@@ -1,12 +1,10 @@
-# Corelight@Home (netmon) — Moving Logs to the Attached Hard Drive
+# Corelight@Home — Moving Logs Off a Full SD Card (Raspberry Pi 5)
 
-**Host:** `netmon` (Raspberry Pi 5), user `pi`
 **Service:** `corelight-softsensor.service` (Corelight Software Sensor)
-**Problem:** All sensor data lives in `/var/corelight` (16 GB and growing) on the 30 GB SD card, which is already at 79% used.
-**Drive:** WD Elements USB HDD, `/dev/sda`, 931 GB total — `sda1` is a 4 GB unformatted swap-type partition, `sda2` is a 927.5 GB ext4 partition (UUID `c378d2f9-2cca-43ba-b6cf-efd36f471cb5`), not yet mounted.
-**Approach:** Mount `sda2` at a dedicated path (`/mnt/corelight-data`), migrate the existing 16 GB, repoint the sensor's `Corelight::disk_space` setting at it, and make the mount required before the service starts.
+**Problem:** The Corelight Software Sensor writes all its data to `/var/corelight` by default. On a Raspberry Pi 5 running from an SD card, that log volume grows steadily and can eat up most of the card's space — risking sensor crashes or a corrupted filesystem once it fills up.
+**Approach:** Mount an external USB drive at a dedicated path, migrate the existing logs over, repoint the sensor's `Corelight::disk_space` setting at the new location, and make the mount required before the service starts — so logs can never silently fall back to filling up the SD card.
 
-Run everything below on the Pi5 itself (SSH or console), as `pi` with `sudo`.
+Run everything below on the Pi5 itself (SSH or console), as a user with `sudo` access.
 
 ## 0. Pre-flight checks
 
@@ -16,7 +14,7 @@ df -h /
 sudo ls -la /var/corelight
 ```
 
-Confirm the service is currently running and note the owner/permissions on `/var/corelight` (the migration preserves these).
+Confirm the service is currently running, check how full the SD card is, and note the owner/permissions on `/var/corelight` (the migration preserves these).
 
 ## 1. Stop the sensor
 
@@ -28,20 +26,20 @@ sudo systemctl stop corelight-softsensor
 
 ```bash
 sudo mkdir -p /mnt/corelight-data
-sudo mount /dev/sda2 /mnt/corelight-data
+sudo mount /dev/sda1 /mnt/corelight-data
 ls -la /mnt/corelight-data
 df -h /mnt/corelight-data
 ```
 
-If you see anything other than an empty directory (or just `lost+found`), stop here — that partition may hold data from a prior project and needs a look before reuse.
+Adjust the device/partition (`/dev/sda1`) to match whatever drive you've attached — check with `lsblk` if you're not sure. If you see anything other than an empty directory (or just `lost+found`), stop here — that partition may hold data from a prior use and needs a look before reuse.
 
-## 3. Copy the existing 16 GB over
+## 3. Copy the existing logs over
 
 ```bash
 sudo rsync -aHAX --info=progress2 /var/corelight/ /mnt/corelight-data/
 ```
 
-`-aHAX` preserves permissions, ownership, hardlinks, ACLs, and extended attributes. This will take a while over USB for 16 GB — let it finish.
+`-aHAX` preserves permissions, ownership, hardlinks, ACLs, and extended attributes. This can take a while over USB depending on how much data has accumulated — let it finish.
 
 Verify the copy:
 
@@ -54,7 +52,13 @@ The two sizes should match closely.
 ## 4. Make the mount permanent (survives reboot)
 
 ```bash
-echo 'UUID=c378d2f9-2cca-43ba-b6cf-efd36f471cb5 /mnt/corelight-data ext4 defaults,nofail,x-systemd.device-timeout=10 0 2' | sudo tee -a /etc/fstab
+sudo blkid /dev/sda1
+```
+
+Copy the `UUID` it prints, then:
+
+```bash
+echo 'UUID=<your-partition-uuid> /mnt/corelight-data ext4 defaults,nofail,x-systemd.device-timeout=10 0 2' | sudo tee -a /etc/fstab
 ```
 
 `nofail` keeps the Pi bootable even if the USB drive is ever unplugged. Test the fstab entry:
@@ -65,7 +69,7 @@ sudo mount -a
 df -h /mnt/corelight-data
 ```
 
-Confirm `/dev/sda2` is mounted there again before continuing.
+Confirm your drive is mounted there again before continuing.
 
 ## 5. Point the sensor at the new location
 
@@ -97,7 +101,7 @@ Save and exit, then:
 sudo systemctl daemon-reload
 ```
 
-This prevents a race on boot where the service starts before the USB drive is mounted (which would otherwise silently recreate `/var/corelight` on the SD card).
+This prevents a race on boot where the service starts before the drive is mounted — which would otherwise silently recreate `/var/corelight` on the SD card.
 
 ## 7. Start the sensor and verify
 
@@ -131,5 +135,4 @@ sudo rm -rf /var/corelight/*
 df -h /
 ```
 
-Root filesystem usage should drop from 79% down to roughly the low 20s (16 GB freed on a 30 GB card).
-
+Your root filesystem usage should drop significantly, freeing the SD card back up for the OS and system files it's actually meant for.
