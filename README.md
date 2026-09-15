@@ -133,17 +133,3 @@ df -h /
 
 Root filesystem usage should drop from 79% down to roughly the low 20s (16 GB freed on a 30 GB card).
 
-## Optional: put the spare 4 GB swap partition to use
-
-`sda1` is already partitioned as a Linux swap type but has never been formatted:
-
-```bash
-sudo mkswap /dev/sda1
-sudo blkid /dev/sda1   # copy the UUID it prints
-echo 'UUID=<paste-uuid-here> none swap sw,nofail 0 0' | sudo tee -a /etc/fstab
-sudo swapon -a
-swapon --show
-```
-
-Not required for the log migration, just a freebie since the partition already exists on the drive. USB swap is slow, so treat it as a safety net rather than a performance feature — with the sensor's 6500 MB memory_limit_mb setting, an extra 4 GB of swap buys headroom before an OOM kill rather than daily use.
-</content>
